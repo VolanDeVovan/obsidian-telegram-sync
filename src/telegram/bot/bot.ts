@@ -83,6 +83,10 @@ async function handlePollingError(plugin: TelegramSyncPlugin, error: any) {
 	} catch {
 		try {
 			pollingError = error.code === "EFATAL" ? "fatalError" : pollingError;
+			// Handle ECONNRESET specifically for macOS sleep mode
+			if (error.code === "ECONNRESET" || error.errno === "ECONNRESET") {
+				pollingError = "connectionReset";
+			}
 		} catch {
 			pollingError = "unknown";
 		}
@@ -95,7 +99,7 @@ async function handlePollingError(plugin: TelegramSyncPlugin, error: any) {
 		}
 	}
 
-	if (!(pollingError == "twoBotInstances")) checkConnectionAfterError(plugin);
+	if (!(pollingError == "twoBotInstances")) checkConnectionAfterError(plugin, pollingError === "connectionReset" ? 5 : 15);
 }
 
 async function checkConnectionAfterError(plugin: TelegramSyncPlugin, intervalInSeconds = 15) {

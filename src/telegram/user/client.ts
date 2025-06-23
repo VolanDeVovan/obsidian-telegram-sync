@@ -71,6 +71,8 @@ export async function init(sessionId: number, sessionType: SessionType, deviceId
 			useWSS: true,
 			networkSocket: PromisedWebSockets,
 			baseLogger: logger,
+			timeout: 30,
+			retryDelay: 1000,
 		});
 	}
 
@@ -99,9 +101,25 @@ export async function reconnect(checkInterval = true): Promise<boolean> {
 	if (!client) return false;
 	if (!client.connected && (!checkInterval || new Date().getTime() - lastReconnectTime.getTime() >= _1min)) {
 		lastReconnectTime = new Date();
-		await client.connect();
+		try {
+			await client.connect();
+		} catch (error) {
+			// If connection failed, client might be in a bad state - recreate it
+			if (error.message?.includes("CONNECTION_NOT_INITED") || 
+				error.message?.includes("ECONNRESET") || 
+				error.message?.includes("NETWORK_MIGRATE")) {
+				console.log("Telegram Sync => Client connection in bad state, recreating...");
+				const currentSessionId = _sessionId;
+				const currentSessionType = _sessionType;
+				const deviceId = require('node-machine-id').machineIdSync(true);
+				await stop();
+				await init(currentSessionId, currentSessionType, deviceId);
+			} else {
+				throw error;
+			}
+		}
 	}
-	return client.connected || false;
+	return client?.connected || false;
 }
 
 export async function isAuthorizedAsUser(): Promise<boolean> {

@@ -61,8 +61,21 @@ export async function reconnect(plugin: TelegramSyncPlugin, displayError = false
 	if (plugin.checkingUserConnection) return;
 	plugin.checkingUserConnection = true;
 	try {
-		await Client.reconnect(false);
-		plugin.userConnected = await Client.isAuthorizedAsUser();
+		const reconnected = await Client.reconnect(false);
+		if (reconnected) {
+			plugin.userConnected = await Client.isAuthorizedAsUser();
+		} else {
+			// If reconnection failed, client might be in a bad state (common after macOS sleep)
+			console.log("Telegram Sync => User client reconnection failed, attempting full reinitialization");
+			await Client.stop();
+			await Client.init(plugin.settings.telegramSessionId, plugin.settings.telegramSessionType, plugin.currentDeviceId);
+			
+			if (plugin.settings.telegramSessionType === "bot") {
+				await Client.signInAsBot(await plugin.getBotToken());
+			}
+			
+			plugin.userConnected = await Client.isAuthorizedAsUser();
+		}
 	} catch (error) {
 		plugin.userConnected = false;
 		if (displayError && plugin.isBotConnected() && plugin.settings.telegramSessionType == "user") {

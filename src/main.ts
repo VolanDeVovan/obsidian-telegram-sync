@@ -62,6 +62,7 @@ export default class TelegramSyncPlugin extends Plugin {
 	time4processOldMessages = false;
 	processOldMessagesIntervalId?: NodeJS.Timer;
 	pinCode?: string = undefined;
+	connectionHealthCheckInterval?: NodeJS.Timer;
 
 	async initTelegram(initType?: Client.SessionType) {
 		this.lastPollingErrors = [];
@@ -144,9 +145,17 @@ export default class TelegramSyncPlugin extends Plugin {
 			else if (this.bot && !sessionType && os.type() == "Darwin" && this.isBotConnected()) {
 				try {
 					this.botUser = await this.bot.getMe();
-				} catch {
+					// Additional check for user connection on macOS
+					if (this.settings.telegramSessionType == "user") {
+						await User.reconnect(this, false);
+					}
+				} catch (error) {
+					// On macOS, connection errors often indicate stale connections from sleep mode
+					console.log("Telegram Sync => macOS connection test failed, forcing reconnection");
 					this.setBotStatus("disconnected");
 					this.userConnected = false;
+					// Force both bot and user reconnection
+					await this.initTelegram();
 				}
 			}
 		} catch {
@@ -189,6 +198,12 @@ export default class TelegramSyncPlugin extends Plugin {
 		this.addSettingTab(this.settingsTab);
 
 		hideMTProtoAlerts(this);
+		
+		// Set up macOS sleep/wake event handling
+		if (os.type() === "Darwin") {
+			this.setupMacOSSleepHandling();
+		}
+		
 		// Initialize the Telegram bot when Obsidian layout is fully loaded
 		this.app.workspace.onLayoutReady(async () => {
 			enqueue(this, this.initTelegram);
@@ -198,12 +213,67 @@ export default class TelegramSyncPlugin extends Plugin {
 		displayAndLog(this, this.status, 0);
 	}
 
+	private setupMacOSSleepHandling() {
+		// Track last successful connection time for sleep detection
+		let lastConnectionCheck = Date.now();
+		let consecutiveFailures = 0;
+		
+		// Periodic connection health check - works even when app is minimized
+		const connectionHealthCheck = setInterval(async () => {
+			if (this.isBotConnected() || this.userConnected) {
+				try {
+					// Test bot connection
+					if (this.bot) {
+						await this.bot.getMe();
+						consecutiveFailures = 0;
+						lastConnectionCheck = Date.now();
+					}
+					
+					// Test user connection if applicable
+					if (this.settings.telegramSessionType === "user" && this.userConnected) {
+						await User.reconnect(this, false);
+					}
+				} catch (error) {
+					consecutiveFailures++;
+					const timeSinceLastCheck = Date.now() - lastConnectionCheck;
+					
+					// If we have multiple failures and significant time gap, likely wake from sleep
+					if (consecutiveFailures >= 2 && timeSinceLastCheck > 60000) { // 1 minute gap
+						console.log("Telegram Sync => Possible macOS wake from sleep detected via connection failure pattern");
+						consecutiveFailures = 0;
+						// Force full reconnection
+						await this.initTelegram();
+					}
+				}
+			}
+		}, 30000); // Check every 30 seconds
+		
+		// Store the interval ID for cleanup
+		this.connectionHealthCheckInterval = connectionHealthCheck;
+
+		// Process-level signals for macOS resume detection
+		if (typeof process !== "undefined") {
+			process.on("SIGCONT", async () => {
+				console.log("Telegram Sync => macOS resume signal detected");
+				setTimeout(async () => {
+					if (this.isBotConnected() || this.userConnected) {
+						await this.initTelegram();
+					}
+				}, 3000);
+			});
+		}
+	}
+
 	async onunload(): Promise<void> {
 		this.status = "unloading";
 		try {
 			clearTooManyRequestsInterval();
 			clearCachedMessagesInterval();
 			clearHandleMediaGroupInterval();
+			if (this.connectionHealthCheckInterval) {
+				clearInterval(this.connectionHealthCheckInterval);
+				this.connectionHealthCheckInterval = undefined;
+			}
 			this.connectionStatusIndicator?.destroy();
 			this.connectionStatusIndicator = undefined;
 			this.settingsTab = undefined;
