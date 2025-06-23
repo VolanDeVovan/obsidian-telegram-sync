@@ -9,7 +9,7 @@ export class FileSuggest extends TextInputSuggest<TFile> {
 		public inputEl: HTMLInputElement,
 		public plugin: TelegramSyncPlugin,
 	) {
-		super(inputEl);
+		super(plugin.app, inputEl);
 	}
 
 	getSuggestions(input_str: string): TFile[] {
